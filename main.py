@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import re
 
 from fastapi import FastAPI, HTTPException, status, Path
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     Column, Integer, String, Boolean, Text, DateTime, ForeignKey, select, func
@@ -115,10 +116,19 @@ async def lifespan(_: FastAPI):
     yield
     # Shutdown
     await engine.dispose()
-
 # ----------------------
 # FastAPI App
 # ----------------------
+app = FastAPI(title="ALKANE Voice Agent API", lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000", "http://127.0.0.1:8000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app = FastAPI(title="ALKANE Voice Agent API", lifespan=lifespan)
 
 # ----------------------
@@ -157,6 +167,7 @@ async def generate_summary(chat_data: str) -> str:
 # ----------------------
 # Endpoints
 # ----------------------
+
 @app.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
     async with async_session() as session:
@@ -247,3 +258,41 @@ async def get_chat_summaries(user_id: int = Path(..., gt=0)):
                 ) for s in summaries
             ]
             return ChatSummaryListResponse(status="success", summaries=summary_list)
+@app.get("/users/{user_id}", response_model=UserResponse)
+async def get_user(user_id: int = Path(..., gt=0)):
+                async with async_session() as session:
+                    async with session.begin():
+                        stmt = select(User).where(User.id == user_id)
+                        result = await session.execute(stmt)
+                        user = result.scalar_one_or_none()
+                        if not user:
+                            logger.warning(f"User ID not found: {user_id}")
+                            raise HTTPException(status_code=404, detail="User not found.")
+                        return UserResponse(
+                            status="success",
+                            user_id=user.id,
+                            name=user.name,
+                            phone_number=user.phone_number,
+                            preferred_call_time=user.preferred_call_time,
+                            language_preference=user.language_preference,
+                            consent_status=user.consent_status
+                        )
+@app.get("/users", response_model=List[UserResponse])
+async def list_users():
+    async with async_session() as session:
+        async with session.begin():
+            stmt = select(User).order_by(User.id)
+            result = await session.execute(stmt)
+            users = result.scalars().all()
+            user_list = [
+                UserResponse(
+                    status="success",
+                    user_id=u.id,
+                    name=u.name,
+                    phone_number=u.phone_number,
+                    preferred_call_time=u.preferred_call_time,
+                    language_preference=u.language_preference,
+                    consent_status=u.consent_status
+                ) for u in users
+            ]
+            return user_list
