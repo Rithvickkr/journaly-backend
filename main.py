@@ -73,7 +73,7 @@ class ChatSummary(Base):
 class UserCreate(BaseModel):
     name: str = Field(...)
     phone_number: str = Field(...)
-    preferred_call_time: datetime = Field(..., alias="preferred_call_time")
+    preferred_call_time: DateTime = Field(..., alias="preferred_call_time")
     language_preference: str = Field(...)
     aboutme: str = Field(...)
 
