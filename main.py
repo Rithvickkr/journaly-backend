@@ -54,7 +54,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     phone_number = Column(String, nullable=False, unique=True, index=True)
-    preferred_call_time = Column(DateTime, nullable=False)
+    preferred_call_time = Column(String, nullable=False)
     language_preference = Column(String, nullable=False)
     aboutme = Column(Text, nullable=False)
     chat_summaries = relationship("ChatSummary", back_populates="user")
@@ -73,7 +73,7 @@ class ChatSummary(Base):
 class UserCreate(BaseModel):
     name: str = Field(...)
     phone_number: str = Field(...)
-    preferred_call_time: DateTime = Field(..., alias="preferred_call_time")
+    preferred_call_time:str = Field(..., alias="preferred_call_time")
     language_preference: str = Field(...)
     aboutme: str = Field(...)
 
@@ -82,7 +82,7 @@ class UserResponse(BaseModel):
     user_id: int
     name: str
     phone_number: str
-    preferred_call_time: DateTime
+    preferred_call_time: str
     language_preference: str
     aboutme: str = Field(..., alias="about_me")
     
