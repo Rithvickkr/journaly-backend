@@ -185,6 +185,7 @@ async def create_user(user: UserCreate):
                     phone_number=existing_user.phone_number,
                     preferred_call_time=existing_user.preferred_call_time,
                     language_preference=existing_user.language_preference,
+                    aboutme=existing_user.aboutme
                 )
             new_user = User(**user.model_dump())
             session.add(new_user)
@@ -201,7 +202,8 @@ async def create_user(user: UserCreate):
                 phone_number=new_user.phone_number,
                 preferred_call_time=new_user.preferred_call_time,
                 language_preference=new_user.language_preference,
-                consent_status=new_user.consent_status
+                aboutme=new_user.aboutme
+                
             )
 
 @app.post("/chat-summaries", response_model=ChatSummaryResponse, status_code=status.HTTP_201_CREATED)
@@ -275,7 +277,7 @@ async def get_user(user_id: int = Path(..., gt=0)):
                             phone_number=user.phone_number,
                             preferred_call_time=user.preferred_call_time,
                             language_preference=user.language_preference,
-                            consent_status=user.consent_status
+                            aboutme=user.aboutme
                         )
 @app.get("/users", response_model=List[UserResponse])
 async def list_users():
@@ -292,7 +294,8 @@ async def list_users():
                     phone_number=u.phone_number,
                     preferred_call_time=u.preferred_call_time,
                     language_preference=u.language_preference,
-                    consent_status=u.consent_status
+                    aboutme=u.aboutme
+                    
                 ) for u in users
             ]
             return user_list
