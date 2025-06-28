@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, status, Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    Column, Integer, String, Boolean, Text, DateTime, ForeignKey, select, func
+    Column, Integer, String, Text, DateTime, ForeignKey, select, func
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base, relationship
@@ -84,7 +84,7 @@ class UserResponse(BaseModel):
     phone_number: str
     preferred_call_time: str
     language_preference: str
-    aboutme: str = Field(..., alias="about_me")
+    aboutme: str
     
 
 class ChatSummaryCreate(BaseModel):
