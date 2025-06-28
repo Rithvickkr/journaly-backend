@@ -185,7 +185,6 @@ async def create_user(user: UserCreate):
                     phone_number=existing_user.phone_number,
                     preferred_call_time=existing_user.preferred_call_time,
                     language_preference=existing_user.language_preference,
-                    consent_status=existing_user.consent_status
                 )
             new_user = User(**user.model_dump())
             session.add(new_user)
