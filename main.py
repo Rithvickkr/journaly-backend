@@ -129,7 +129,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app = FastAPI(title="ALKANE Voice Agent API", lifespan=lifespan)
+
 
 # ----------------------
 # Together AI API Call
