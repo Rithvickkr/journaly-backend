@@ -217,6 +217,10 @@ async def generate_summary(chat_data: str) -> str:
 # ----------------------
 # Endpoints
 # ----------------------
+@app.get("/healthz")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 @app.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
     async with async_session() as session:
