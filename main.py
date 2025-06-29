@@ -256,7 +256,31 @@ async def create_user(user: UserCreate):
                 language_preference=new_user.language_preference,
                 aboutme=new_user.aboutme
             )
+class UserLogin(BaseModel):
+    phone_number: str = Field(...)
 
+class UserLoginResponse(BaseModel):
+    status: str
+    user_id: int
+    name: str
+    phone_number: str
+
+@app.post("/login", response_model=UserLoginResponse)
+async def login_user(login: UserLogin):
+    async with async_session() as session:
+        async with session.begin():
+            stmt = select(User).where(User.phone_number == login.phone_number)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            if not user:
+                logger.warning(f"Login attempt with non-existent phone number: {login.phone_number}")
+                raise HTTPException(status_code=404, detail="User not found.")
+            return UserLoginResponse(
+                status="success",
+                user_id=user.id,
+                name=user.name,
+                phone_number=user.phone_number
+            )
 @app.post("/chat-summaries", response_model=ChatSummaryResponse, status_code=status.HTTP_201_CREATED)
 async def create_chat_summary(summary: ChatSummaryCreate):
     async with async_session() as session:
