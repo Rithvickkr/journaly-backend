@@ -192,7 +192,7 @@ async def generate_summary(chat_data: str) -> str:
         "Content-Type": "application/json"
     }
     prompt = (
-        "Summarize this conversation into 100-200 words in a casual, diary-like style: "
+        "Summarize this conversation based on the user chats into 100-200 words in a casual, diary-like style in the perspective of the user , exclude the agents chats: "
         f"{chat_data}"
     )
     payload = {
