@@ -5,6 +5,8 @@ from typing import List
 from contextlib import asynccontextmanager
 import re
 
+from omnidimension import Client
+
 from fastapi import FastAPI, HTTPException, status, Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -17,6 +19,9 @@ from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
 import aiohttp
 from tenacity import retry, stop_after_attempt, wait_exponential
+import asyncio
+from datetime import time
+
 
 # ----------------------
 # Environment Variables
@@ -125,7 +130,7 @@ app = FastAPI(title="ALKANE Voice Agent API", lifespan=lifespan)
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000", "http://127.0.0.1:8000","http://localhost:8080"],
+    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000", "http://127.0.0.1:8000","http://localhost:8080","*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -204,7 +209,7 @@ async def create_user(user: UserCreate):
                 language_preference=new_user.language_preference,
                 aboutme=new_user.aboutme
                 
-            )
+            )            
 
 @app.post("/chat-summaries", response_model=ChatSummaryResponse, status_code=status.HTTP_201_CREATED)
 async def create_chat_summary(summary: ChatSummaryCreate):
@@ -299,3 +304,109 @@ async def list_users():
                 ) for u in users
             ]
             return user_list
+# ----------------------
+# Omni Dimension API Integration
+# ----------------------
+OMNI_DIMENSION_API_KEY = os.getenv("OMNI_DIMENSION_API_KEY")
+OMNI_DIMENSION_AGENT_ID = os.getenv("OMNI_DIMENSION_AGENT_ID", "123")
+if not OMNI_DIMENSION_API_KEY:
+    logger.warning("OMNI_DIMENSION_API_KEY not set. Call scheduling will be disabled.")
+
+# Initialize Omni Dimension client
+client = Client(api_key=OMNI_DIMENSION_API_KEY) if OMNI_DIMENSION_API_KEY else None
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+async def dispatch_call_to_user(user_id: int, phone_number: str, user_name: str):
+    """Dispatch a call to user via Omni Dimension Client"""
+    if not client:
+        logger.error("Omni Dimension client not configured")
+        return False
+    
+    call_context = {
+        "customer_name": user_name,
+        "user_id": str(user_id),
+        "priority": "normal"
+    }
+    
+    try:
+        response = client.call.dispatch_call(
+            agent_id=int(OMNI_DIMENSION_AGENT_ID),
+            to_number=f"+91{phone_number}",
+            call_context=call_context
+        )
+        logger.info(f"Call dispatched successfully to {phone_number}: {response}")
+        return True
+    except Exception as e:
+        logger.error(f"Error dispatching call to {phone_number}: {e}")
+        return False
+
+async def schedule_user_call(user_id: int):
+    """Schedule a call for a specific user at their preferred time"""
+    async with async_session() as session:
+        async with session.begin():
+            # Fetch user data from database
+            stmt = select(User).where(User.id == user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.error(f"User {user_id} not found for call scheduling")
+                return False
+            
+            logger.info(f"Fetched user data: ID={user.id}, Name={user.name}, Phone={user.phone_number}, Preferred Time={user.preferred_call_time}")
+            
+            # Schedule call using the fetched user data
+            success = await dispatch_call_to_user(
+                user_id=user.id,
+                phone_number=user.phone_number,
+                user_name=user.name
+            )
+            
+            return success
+
+@app.post("/schedule-call/{user_id}")
+async def schedule_call_for_user(user_id: int = Path(..., gt=0)):
+    """Manually trigger a call for a user"""
+    success = await schedule_user_call(user_id)
+    
+    if success:
+        return {"status": "success", "message": f"Call scheduled for user {user_id}"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to schedule call")
+
+@app.post("/schedule-calls-for-all")
+async def schedule_calls_for_all_users():
+    """Schedule calls for all users at their preferred times"""
+    async with async_session() as session:
+        async with session.begin():
+            stmt = select(User)
+            result = await session.execute(stmt)
+            users = result.scalars().all()
+            
+            scheduled_count = 0
+            failed_count = 0
+            
+            for user in users:
+                try:
+                    success = await dispatch_call_to_user(
+                        user_id=user.id,
+                        phone_number=user.phone_number,
+                        user_name=user.name
+                    )
+                    
+                    if success:
+                        scheduled_count += 1
+                    else:
+                        failed_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Failed to schedule call for user {user.id}: {e}")
+                    failed_count += 1
+            
+            return {
+                "status": "success",
+                "scheduled": scheduled_count,
+                "failed": failed_count,
+                "total": len(users)
+            }
