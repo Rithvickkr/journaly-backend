@@ -1,9 +1,10 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, time
 from typing import List
 from contextlib import asynccontextmanager
 import re
+from zoneinfo import ZoneInfo
 
 from omnidimension import Client
 
@@ -20,8 +21,8 @@ from dotenv import load_dotenv
 import aiohttp
 from tenacity import retry, stop_after_attempt, wait_exponential
 import asyncio
-from datetime import time
-
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # ----------------------
 # Environment Variables
@@ -29,8 +30,8 @@ from datetime import time
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOGETHER_AI_API_KEY = os.getenv("TOGETHER_AI_API_KEY")
-print(f"DATABASE_URL: {DATABASE_URL}")
-print(f"TOGETHER_AI_API_KEY: {TOGETHER_AI_API_KEY}")
+OMNI_DIMENSION_API_KEY = os.getenv("OMNI_DIMENSION_API_KEY")
+OMNI_DIMENSION_AGENT_ID = os.getenv("OMNI_DIMENSION_AGENT_ID", "123")
 
 if not DATABASE_URL or not TOGETHER_AI_API_KEY:
     raise RuntimeError("DATABASE_URL and TOGETHER_AI_API_KEY must be set in .env file.")
@@ -78,7 +79,7 @@ class ChatSummary(Base):
 class UserCreate(BaseModel):
     name: str = Field(...)
     phone_number: str = Field(...)
-    preferred_call_time:str = Field(..., alias="preferred_call_time")
+    preferred_call_time: str = Field(..., alias="preferred_call_time")
     language_preference: str = Field(...)
     aboutme: str = Field(...)
 
@@ -90,7 +91,6 @@ class UserResponse(BaseModel):
     preferred_call_time: str
     language_preference: str
     aboutme: str
-    
 
 class ChatSummaryCreate(BaseModel):
     user_id: int
@@ -111,6 +111,37 @@ class ChatSummaryListResponse(BaseModel):
     summaries: List[ChatSummaryListItem]
 
 # ----------------------
+# Scheduler Setup
+# ----------------------
+scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
+
+async def schedule_calls_for_users():
+    """Check users' preferred call times and dispatch calls if current time matches."""
+    async with async_session() as session:
+        async with session.begin():
+            stmt = select(User)
+            result = await session.execute(stmt)
+            users = result.scalars().all()
+            current_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M")
+            logger.info(f"Checking schedules at {current_time} for {len(users)} users")
+            
+            for user in users:
+                try:
+                    if user.preferred_call_time == current_time:
+                        logger.info(f"Scheduling call for user {user.id} at {user.preferred_call_time}")
+                        success = await dispatch_call_to_user(
+                            user_id=user.id,
+                            phone_number=user.phone_number,
+                            user_name=user.name
+                        )
+                        if success:
+                            logger.info(f"Call scheduled for user {user.id}")
+                        else:
+                            logger.error(f"Failed to schedule call for user {user.id}")
+                except Exception as e:
+                    logger.error(f"Error processing user {user.id}: {e}")
+
+# ----------------------
 # Lifespan Context Manager
 # ----------------------
 @asynccontextmanager
@@ -119,9 +150,23 @@ async def lifespan(_: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created.")
+    
+    # Start scheduler
+    scheduler.add_job(
+        schedule_calls_for_users,
+        trigger=CronTrigger(second=0),  # Run every minute at :00 seconds
+        id="schedule_calls",
+        replace_existing=True
+    )
+    scheduler.start()
+    logger.info("Scheduler started.")
+    
     yield
     # Shutdown
+    scheduler.shutdown()
+    logger.info("Scheduler shut down.")
     await engine.dispose()
+
 # ----------------------
 # FastAPI App
 # ----------------------
@@ -130,12 +175,11 @@ app = FastAPI(title="ALKANE Voice Agent API", lifespan=lifespan)
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000", "http://127.0.0.1:8000","http://localhost:8080","*"],
+    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000", "http://127.0.0.1:8000", "http://localhost:8080","*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ----------------------
 # Together AI API Call
@@ -173,7 +217,6 @@ async def generate_summary(chat_data: str) -> str:
 # ----------------------
 # Endpoints
 # ----------------------
-
 @app.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
     async with async_session() as session:
@@ -208,27 +251,23 @@ async def create_user(user: UserCreate):
                 preferred_call_time=new_user.preferred_call_time,
                 language_preference=new_user.language_preference,
                 aboutme=new_user.aboutme
-                
-            )            
+            )
 
 @app.post("/chat-summaries", response_model=ChatSummaryResponse, status_code=status.HTTP_201_CREATED)
 async def create_chat_summary(summary: ChatSummaryCreate):
     async with async_session() as session:
         async with session.begin():
-            # Validate user_id
             stmt = select(User).where(User.id == summary.user_id)
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
             if not user:
                 logger.warning(f"User ID not found: {summary.user_id}")
                 raise HTTPException(status_code=404, detail="User not found.")
-            # Generate summary
             try:
                 generated_summary = await generate_summary(summary.chat_data)
             except Exception as e:
                 logger.error(f"Together AI API failed: {e}")
                 raise HTTPException(status_code=500, detail="Failed to generate summary.")
-            # Save summary
             chat_summary = ChatSummary(
                 user_id=summary.user_id,
                 conversation_summary=generated_summary
@@ -246,14 +285,12 @@ async def create_chat_summary(summary: ChatSummaryCreate):
 async def get_chat_summaries(user_id: int = Path(..., gt=0)):
     async with async_session() as session:
         async with session.begin():
-            # Validate user_id
             stmt = select(User).where(User.id == user_id)
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
             if not user:
                 logger.warning(f"User ID not found: {user_id}")
                 raise HTTPException(status_code=404, detail="User not found.")
-            # Get summaries
             stmt = select(ChatSummary).where(ChatSummary.user_id == user_id).order_by(ChatSummary.created_at.desc())
             result = await session.execute(stmt)
             summaries = result.scalars().all()
@@ -265,25 +302,27 @@ async def get_chat_summaries(user_id: int = Path(..., gt=0)):
                 ) for s in summaries
             ]
             return ChatSummaryListResponse(status="success", summaries=summary_list)
+
 @app.get("/users/{user_id}", response_model=UserResponse)
 async def get_user(user_id: int = Path(..., gt=0)):
-                async with async_session() as session:
-                    async with session.begin():
-                        stmt = select(User).where(User.id == user_id)
-                        result = await session.execute(stmt)
-                        user = result.scalar_one_or_none()
-                        if not user:
-                            logger.warning(f"User ID not found: {user_id}")
-                            raise HTTPException(status_code=404, detail="User not found.")
-                        return UserResponse(
-                            status="success",
-                            user_id=user.id,
-                            name=user.name,
-                            phone_number=user.phone_number,
-                            preferred_call_time=user.preferred_call_time,
-                            language_preference=user.language_preference,
-                            aboutme=user.aboutme
-                        )
+    async with async_session() as session:
+        async with session.begin():
+            stmt = select(User).where(User.id == user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            if not user:
+                logger.warning(f"User ID not found: {user_id}")
+                raise HTTPException(status_code=404, detail="User not found.")
+            return UserResponse(
+                status="success",
+                user_id=user.id,
+                name=user.name,
+                phone_number=user.phone_number,
+                preferred_call_time=user.preferred_call_time,
+                language_preference=user.language_preference,
+                aboutme=user.aboutme
+            )
+
 @app.get("/users", response_model=List[UserResponse])
 async def list_users():
     async with async_session() as session:
@@ -300,21 +339,17 @@ async def list_users():
                     preferred_call_time=u.preferred_call_time,
                     language_preference=u.language_preference,
                     aboutme=u.aboutme
-                    
                 ) for u in users
             ]
             return user_list
+
 # ----------------------
 # Omni Dimension API Integration
 # ----------------------
-OMNI_DIMENSION_API_KEY = os.getenv("OMNI_DIMENSION_API_KEY")
-OMNI_DIMENSION_AGENT_ID = os.getenv("OMNI_DIMENSION_AGENT_ID", "123")
 if not OMNI_DIMENSION_API_KEY:
     logger.warning("OMNI_DIMENSION_API_KEY not set. Call scheduling will be disabled.")
 
-# Initialize Omni Dimension client
 client = Client(api_key=OMNI_DIMENSION_API_KEY) if OMNI_DIMENSION_API_KEY else None
-
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 async def dispatch_call_to_user(user_id: int, phone_number: str, user_name: str):
@@ -345,7 +380,6 @@ async def schedule_user_call(user_id: int):
     """Schedule a call for a specific user at their preferred time"""
     async with async_session() as session:
         async with session.begin():
-            # Fetch user data from database
             stmt = select(User).where(User.id == user_id)
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
@@ -356,7 +390,6 @@ async def schedule_user_call(user_id: int):
             
             logger.info(f"Fetched user data: ID={user.id}, Name={user.name}, Phone={user.phone_number}, Preferred Time={user.preferred_call_time}")
             
-            # Schedule call using the fetched user data
             success = await dispatch_call_to_user(
                 user_id=user.id,
                 phone_number=user.phone_number,
